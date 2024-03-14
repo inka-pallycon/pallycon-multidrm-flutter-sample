@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -32,7 +31,6 @@ import com.google.android.exoplayer2.drm.FrameworkMediaDrm
 import com.google.android.exoplayer2.drm.UnsupportedDrmException
 import com.google.android.exoplayer2.drm.DummyExoMediaDrm
 import com.google.android.exoplayer2.drm.LocalMediaDrmCallback
-import com.google.android.exoplayer2.upstream.DefaultDataSourceFactory
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.ClippingMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager.MediaDescriptionAdapter
@@ -51,14 +49,11 @@ import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
 import io.flutter.plugin.common.EventChannel.EventSink
-import androidx.media.session.MediaButtonReceiver
 import androidx.work.Data
 import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.drm.DrmSessionManagerProvider
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
-import com.google.android.exoplayer2.trackselection.DefaultTrackSelector.SelectionOverride
-import com.google.android.exoplayer2.trackselection.TrackSelectionOverrides
 import com.google.android.exoplayer2.upstream.DataSource
 import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.google.android.exoplayer2.util.Util
@@ -408,30 +403,36 @@ internal class BetterPlayer(
             drmSessionManagerProvider = DrmSessionManagerProvider { drmSessionManager }
         }
         return when (type) {
-            C.TYPE_SS -> SsMediaSource.Factory(
-                DefaultSsChunkSource.Factory(mediaDataSourceFactory),
-                DefaultDataSource.Factory(context, mediaDataSourceFactory)
-            )
-                .setDrmSessionManagerProvider(drmSessionManagerProvider)
-                .createMediaSource(mediaItem)
-            C.TYPE_DASH -> DashMediaSource.Factory(
-                DefaultDashChunkSource.Factory(mediaDataSourceFactory),
-                DefaultDataSource.Factory(context, mediaDataSourceFactory)
-            )
-                .setDrmSessionManagerProvider(drmSessionManagerProvider)
-                .createMediaSource(mediaItem)
-            C.TYPE_HLS -> HlsMediaSource.Factory(mediaDataSourceFactory)
-                .setDrmSessionManagerProvider(drmSessionManagerProvider)
-                .createMediaSource(mediaItem)
-            C.TYPE_OTHER -> ProgressiveMediaSource.Factory(
-                mediaDataSourceFactory,
-                DefaultExtractorsFactory()
-            )
-                .setDrmSessionManagerProvider(drmSessionManagerProvider)
-                .createMediaSource(mediaItem)
-            else -> {
-                throw IllegalStateException("Unsupported type: $type")
+            C.TYPE_SS -> {
+                val factory = SsMediaSource.Factory(
+                    DefaultSsChunkSource.Factory(mediaDataSourceFactory),
+                    DefaultDataSource.Factory(context, mediaDataSourceFactory)
+                )
+                drmSessionManagerProvider?.let { factory.setDrmSessionManagerProvider(it) }
+                factory.createMediaSource(mediaItem)
             }
+            C.TYPE_DASH -> {
+                val factory = DashMediaSource.Factory(
+                    DefaultDashChunkSource.Factory(mediaDataSourceFactory),
+                    DefaultDataSource.Factory(context, mediaDataSourceFactory)
+                )
+                drmSessionManagerProvider?.let { factory.setDrmSessionManagerProvider(it) }
+                factory.createMediaSource(mediaItem)
+            }
+            C.TYPE_HLS -> {
+                val factory = HlsMediaSource.Factory(mediaDataSourceFactory)
+                drmSessionManagerProvider?.let { factory.setDrmSessionManagerProvider(it) }
+                factory.createMediaSource(mediaItem)
+            }
+            C.TYPE_OTHER -> {
+                val factory = ProgressiveMediaSource.Factory(
+                    mediaDataSourceFactory,
+                    DefaultExtractorsFactory()
+                )
+                drmSessionManagerProvider?.let { factory.setDrmSessionManagerProvider(it) }
+                factory.createMediaSource(mediaItem)
+            }
+            else -> throw IllegalStateException("Unsupported type: $type")
         }
     }
 
@@ -652,73 +653,104 @@ internal class BetterPlayer(
     }
 
     fun setAudioTrack(name: String, index: Int) {
-        try {
-            val mappedTrackInfo = trackSelector.currentMappedTrackInfo
-            if (mappedTrackInfo != null) {
-                for (rendererIndex in 0 until mappedTrackInfo.rendererCount) {
-                    if (mappedTrackInfo.getRendererType(rendererIndex) != C.TRACK_TYPE_AUDIO) {
-                        continue
-                    }
-                    val trackGroupArray = mappedTrackInfo.getTrackGroups(rendererIndex)
-                    var hasElementWithoutLabel = false
-                    var hasStrangeAudioTrack = false
-                    for (groupIndex in 0 until trackGroupArray.length) {
-                        val group = trackGroupArray[groupIndex]
-                        for (groupElementIndex in 0 until group.length) {
-                            val format = group.getFormat(groupElementIndex)
-                            if (format.label == null) {
-                                hasElementWithoutLabel = true
-                            }
-                            if (format.id != null && format.id == "1/15") {
-                                hasStrangeAudioTrack = true
-                            }
-                        }
-                    }
-                    for (groupIndex in 0 until trackGroupArray.length) {
-                        val group = trackGroupArray[groupIndex]
-                        for (groupElementIndex in 0 until group.length) {
-                            val label = group.getFormat(groupElementIndex).label
-                            if (name == label && index == groupIndex) {
-                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
-                                return
-                            }
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+                .setRendererDisabled(1, false)
+                .setPreferredAudioLanguage(name)
+                .build()
+        )
 
-                            ///Fallback option
-                            if (!hasStrangeAudioTrack && hasElementWithoutLabel && index == groupIndex) {
-                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
-                                return
-                            }
-                            ///Fallback option
-                            if (hasStrangeAudioTrack && name == label) {
-                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
-                                return
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (exception: Exception) {
-            Log.e(TAG, "setAudioTrack failed$exception")
-        }
+//        try {
+//            val mappedTrackInfo = trackSelector.currentMappedTrackInfo
+//            if (mappedTrackInfo != null) {
+//                for (rendererIndex in 0 until mappedTrackInfo.rendererCount) {
+//                    if (mappedTrackInfo.getRendererType(rendererIndex) != C.TRACK_TYPE_AUDIO) {
+//                        continue
+//                    }
+//                    val trackGroupArray = mappedTrackInfo.getTrackGroups(rendererIndex)
+//                    var hasElementWithoutLabel = false
+//                    var hasStrangeAudioTrack = false
+//                    for (groupIndex in 0 until trackGroupArray.length) {
+//                        val group = trackGroupArray[groupIndex]
+//                        for (groupElementIndex in 0 until group.length) {
+//                            val format = group.getFormat(groupElementIndex)
+//                            if (format.label == null) {
+//                                hasElementWithoutLabel = true
+//                            }
+//                            if (format.id != null && format.id == "1/15") {
+//                                hasStrangeAudioTrack = true
+//                            }
+//                        }
+//                    }
+//                    for (groupIndex in 0 until trackGroupArray.length) {
+//                        val group = trackGroupArray[groupIndex]
+//                        for (groupElementIndex in 0 until group.length) {
+//                            val label = group.getFormat(groupElementIndex).label
+//                            if (name == label && index == groupIndex) {
+//                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
+//                                return
+//                            }
+//
+//                            ///Fallback option
+//                            if (!hasStrangeAudioTrack && hasElementWithoutLabel && index == groupIndex) {
+//                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
+//                                return
+//                            }
+//                            ///Fallback option
+//                            if (hasStrangeAudioTrack && name == label) {
+//                                setAudioTrack(rendererIndex, groupIndex, groupElementIndex)
+//                                return
+//                            }
+//                        }
+//                    }
+//                }
+//            }
+//        } catch (exception: Exception) {
+//            Log.e(TAG, "setAudioTrack failed$exception")
+//        }
     }
 
     private fun setAudioTrack(rendererIndex: Int, groupIndex: Int, groupElementIndex: Int) {
-        val mappedTrackInfo = trackSelector.currentMappedTrackInfo
-        if (mappedTrackInfo != null) {
-            val builder = trackSelector.parameters.buildUpon()
-                .setRendererDisabled(rendererIndex, false)
-                .setTrackSelectionOverrides(
-                    TrackSelectionOverrides.Builder().addOverride(
-                        TrackSelectionOverrides.TrackSelectionOverride(
-                            mappedTrackInfo.getTrackGroups(
-                                rendererIndex
-                            ).get(groupIndex)
-                        )
-                    ).build()
-                )
-
-            trackSelector.setParameters(builder)
-        }
+//        val mappedTrackInfo = trackSelector.currentMappedTrackInfo
+//        if (mappedTrackInfo != null) {
+//            val track = TrackSelectionOverride(
+//                mappedTrackInfo.getTrackGroups(rendererIndex).get(groupIndex),
+//                groupElementIndex
+//            )
+//
+//            val trackSelector = DefaultTrackSelector(trackSelector.context)
+//            trackSelector.parameters = trackSelector.buildUponParameters()
+//                .setRendererDisabled(rendererIndex, false)
+//                .setTrackSelectionOverride(
+//                    rendererIndex, mappedTrackInfo.getTrackGroups(rendererIndex),
+//                    SelectionOverride(groupIndex, groupElementIndex)
+//                )
+//                .build()
+////            val builder = trackSelector.parameters.buildUpon()
+////                .setRendererDisabled(rendererIndex, false)
+////                .setTrackSelectionOverrides(
+////                    TrackSelectionOverrides.Builder().addOverride(
+////                        TrackSelectionOverrides.TrackSelectionOverride(
+////                            mappedTrackInfo.getTrackGroups(
+////                                rendererIndex
+////                            ).get(groupIndex)
+////                        )
+////                    ).build()
+////                )
+//
+//            val trackGroup = mappedTrackInfo.getTrackGroups(rendererIndex).get(groupIndex)
+//            val trackIndices = intArrayOf(0)
+//
+//            val overridesBuilder = TrackSelectionOverrides.Builder()
+//            val trackSelectionOverride = TrackSelectionOverrides.TrackSelectionOverride(trackGroup, trackIndices.toHashSet())
+//            overridesBuilder.addOverride(trackSelectionOverride)
+//
+//            val builder = trackSelector.parameters.buildUpon()
+//                .setRendererDisabled(rendererIndex, false)
+//                .setTrackSelectionOverrides(overridesBuilder.build())
+//
+//            trackSelector.setParameters(builder.build())
+//        }
     }
 
     private fun sendSeekToEvent(positionMs: Long) {
