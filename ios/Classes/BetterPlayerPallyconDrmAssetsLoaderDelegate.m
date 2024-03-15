@@ -23,11 +23,6 @@ NSString * DEFAULT_PALLYCON_LICENSE_SERVER_URL = @"https://license-global.pallyc
         }
     }
 
-    if (_siteId == nil) {
-        NSLog(@"siteId is null");
-        return nil;
-    }
-
     return self;
 }
 
@@ -81,7 +76,12 @@ NSString * DEFAULT_PALLYCON_LICENSE_SERVER_URL = @"https://license-global.pallyc
     NSData * certificate = nil;
     NSURLResponse * response;
     
-    NSURL * requestURL = [[NSURL alloc] initWithString: [NSString stringWithFormat:@"%@?siteId=%@", _certificateURL , siteId]];
+    NSURL * requestURL = nil;
+    if (_siteId == nil && _certificateURL != nil) {
+        requestURL = _certificateURL;
+    } else {
+        requestURL = [[NSURL alloc] initWithString: [NSString stringWithFormat:@"%@?siteId=%@", _certificateURL , siteId]];
+    }
 
     NSMutableURLRequest * request = [[NSMutableURLRequest alloc] initWithURL:requestURL];
     [request setHTTPMethod:@"POST"];
